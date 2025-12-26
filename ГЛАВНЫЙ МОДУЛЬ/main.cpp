@@ -354,72 +354,139 @@ int main() {
     });
 
     // ---------- Attempts / Answers ----------
-    srv.Post(R"(/tests/([A-Za-z0-9_:-]+)/attempts/?$)", [&](const Request& req, Response& res){
-        auto claims = extractClaims(req);
-        if (!claims.valid) { res.status = 401; return; }
-        std::string testId = req.matches[1];
-        auto maybeTest = testsRepo->get(testId);
-        if (!maybeTest) { res.status = 404; return; }
-        if (!maybeTest->active) { res.status = 400; res.set_content("Test not active"); return; }
-        // default: only students can create attempt; require test-taking (no permission name)
-        // check if user already has attempt: (simplified) not implemented
-        Attempt a;
-        a.id = make_id("att");
-        a.userId = claims.userId;
-        a.testId = testId;
-        // build questions versions
-        for (auto &qid: maybeTest->questionIds) {
-            // select last version (simplified: version stored in question struct)
-            auto q = questionsRepo->get(qid);
-            if (q) {
-                a.q_and_versions.emplace_back(qid, q->version);
-                a.answers.push_back(-1);
-            }
-        }
-        attemptsRepo->create(a);
-        res.status = 201;
-        res.set_content(json{{"id", a.id}}.dump(), "application/json");
-    });
+    // ---------- Attempts ----------
+srv.Post(R"(/tests/([A-Za-z0-9_:-]+)/attempts/?$)",
+[&](const Request& req, Response& res) {
 
-    srv.Put(R"(/attempts/([A-Za-z0-9_:-]+)/answer/?$)", [&](const Request& req, Response& res){
-        auto claims = extractClaims(req);
-        if (!claims.valid) { res.status = 401; return; }
-        std::string attemptId = req.matches[1];
-        auto maybeAtt = attemptsRepo->get(attemptId);
-        if (!maybeAtt) { res.status = 404; return; }
-        if (maybeAtt->userId != claims.userId) { res.status = 403; return; }
-        if (maybeAtt->finished) { res.status = 400; res.set_content("Attempt finished"); return; }
-        json body = json::parse(req.body);
-        int qIndex = body.value("qIndex", -1);
-        int choice = body.value("choice", -1);
-        if (qIndex < 0 || qIndex >= (int)maybeAtt->answers.size()) { res.status = 400; return; }
-        maybeAtt->answers[qIndex] = choice;
-        attemptsRepo->update(attemptId, *maybeAtt);
-        res.status = 200;
-    });
+    auto claims = extractClaims(req);
+    if (!claims.valid) {
+        res.status = 401;
+        res.set_content(
+            json{{"error", "unauthorized"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
 
-    srv.Post(R"(/attempts/([A-Za-z0-9_:-]+)/finish/?$)", [&](const Request& req, Response& res){
-        auto claims = extractClaims(req);
-        if (!claims.valid) { res.status = 401; return; }
-        std::string attemptId = req.matches[1];
-        auto maybeAtt = attemptsRepo->get(attemptId);
-        if (!maybeAtt) { res.status = 404; return; }
-        if (maybeAtt->userId != claims.userId) { res.status = 403; return; }
-        if (maybeAtt->finished) { res.status = 400; return; }
-        // compute score (simple)
-        double correct = 0;
-        for (size_t i=0;i<maybeAtt->q_and_versions.size();++i) {
-            auto qid = maybeAtt->q_and_versions[i].first;
-            auto q = questionsRepo->get(qid);
-            if (q) {
-                if (maybeAtt->answers[i] == q->correctIndex) correct += 1.0;
-            }
+    std::string testId = req.matches[1];
+    auto maybeTest = testsRepo->get(testId);
+    if (!maybeTest) {
+        res.status = 404;
+        res.set_content(
+            json{{"error", "test_not_found"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    if (!maybeTest->active) {
+        res.status = 400;
+        res.set_content(
+            json{{"error", "test_not_active"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    Attempt a;
+    a.id = make_id("att");
+    a.userId = claims.userId;
+    a.testId = testId;
+
+    for (auto& qid : maybeTest->questionIds) {
+        auto q = questionsRepo->get(qid);
+        if (q) {
+            a.q_and_versions.emplace_back(qid, q->version);
+            a.answers.push_back(-1);
         }
-        maybeAtt->finished = true;
-        maybeAtt->score = (maybeAtt->q_and_versions.size() ? (correct / maybeAtt->q_and_versions.size()) * 100.0 : 0.0);
-        attemptsRepo->update(attemptId, *maybeAtt);
-        res.set_content(json{{"score", maybeAtt->score}}.dump(), "application/json");
-    });
+    }
+
+    attemptsRepo->create(a);
+
+    res.status = 201;
+    res.set_content(
+        json{{"id", a.id}}.dump(),
+        "application/json"
+    );
+});
+
+// ---------- Answers ----------
+srv.Put(R"(/attempts/([A-Za-z0-9_:-]+)/answer/?$)",
+[&](const Request& req, Response& res) {
+
+    auto claims = extractClaims(req);
+    if (!claims.valid) {
+        res.status = 401;
+        res.set_content(
+            json{{"error", "unauthorized"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    std::string attemptId = req.matches[1];
+    auto maybeAtt = attemptsRepo->get(attemptId);
+    if (!maybeAtt) {
+        res.status = 404;
+        res.set_content(
+            json{{"error", "attempt_not_found"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    if (maybeAtt->userId != claims.userId) {
+        res.status = 403;
+        res.set_content(
+            json{{"error", "forbidden"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    if (maybeAtt->finished) {
+        res.status = 400;
+        res.set_content(
+            json{{"error", "attempt_finished"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    json body;
+    try {
+        body = json::parse(req.body);
+    } catch (...) {
+        res.status = 400;
+        res.set_content(
+            json{{"error", "invalid_json"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    int qIndex = body.value("qIndex", -1);
+    int choice = body.value("choice", -1);
+
+    if (qIndex < 0 || qIndex >= (int)maybeAtt->answers.size()) {
+        res.status = 400;
+        res.set_content(
+            json{{"error", "invalid_question_index"}}.dump(),
+            "application/json"
+        );
+        return;
+    }
+
+    maybeAtt->answers[qIndex] = choice;
+    attemptsRepo->update(attemptId, *maybeAtt);
+
+    res.status = 200;
+    res.set_content(
+        json{{"status", "answer_saved"}}.dump(),
+        "application/json"
+    );
+});
+
 
     // ---------- Notifications, health, etc ----------
     srv.Get(R"(/health/?$)", [&](const Request& req, Response& res){
@@ -430,3 +497,4 @@ int main() {
     srv.listen("0.0.0.0", 8080);
     return 0;
 }
+
