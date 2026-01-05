@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bot:
     build: .
@@ -7,21 +5,21 @@ services:
       - .env
     depends_on:
       - redis
-      - auth-service
-      - core-service
+      # - auth-service  # Закомментировано для теста
+      # - core-service
     ports:
-      - "8080:8080"  # If webhook, else polling doesn't need port
+      - "8080:8080"  # Если webhook; для polling не нужно
     volumes:
       - .:/app
 
-  nginx-bot:
-    image: nginx:latest
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx-bot.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - bot
+  # nginx-bot:  # Закомментировано, если не нужен
+  #   image: nginx:latest
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./nginx-bot.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - bot
 
   redis:
     image: redis:alpine
@@ -46,39 +44,39 @@ services:
     volumes:
       - mongo-data:/data/db
 
-  auth-service:
-    image: auth-image  # Placeholder: build from Go/C++ module
-    ports:
-      - "8081:8081"
-    depends_on:
-      - redis
-      - postgres  # Assuming it uses DB
+  # auth-service:  # Placeholder - закомментировано
+  #   image: auth-image
+  #   ports:
+  #     - "8081:8081"
+  #   depends_on:
+  #     - redis
+  #     - postgres
 
-  core-service:
-    image: core-image  # Placeholder: build from C++/Go module
-    ports:
-      - "8082:8082"
-    depends_on:
-      - redis
-      - postgres
-      - mongodb
+  # core-service:  # Placeholder - закомментировано
+  #   image: core-image
+  #   ports:
+  #     - "8082:8082"
+  #   depends_on:
+  #     - redis
+  #     - postgres
+  #     - mongodb
 
-  web-client:
-    image: web-client-image  # Placeholder: e.g., Node.js/React
-    ports:
-      - "3000:3000"
-    depends_on:
-      - core-service
-      - auth-service
+  # web-client:  # Placeholder - закомментировано
+  #   image: web-client-image
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - core-service
+  #     - auth-service
 
-  nginx-web:
-    image: nginx:latest
-    ports:
-      - "8083:80"
-    volumes:
-      - ./nginx-web.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - web-client
+  # nginx-web:  # Закомментировано
+  #   image: nginx:latest
+  #   ports:
+  #     - "8083:80"
+  #   volumes:
+  #     - ./nginx-web.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - web-client
 
 volumes:
   postgres-data:
