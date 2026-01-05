@@ -12,6 +12,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, CallbackContext, JobQueue
 )
+import pytz
 
 # Настройка логирования
 logging.basicConfig(
@@ -19,7 +20,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
 
 # Глобальные настройки
 class Config:
@@ -33,16 +33,13 @@ class Config:
     POLLING_INTERVAL_NOTIFICATIONS = 30  # секунды для уведомлений
     LOGIN_TOKEN_EXPIRY = 300  # секунды для токена входа
 
-
 # Подключение к Redis
 redis_client = redis.Redis.from_url(Config.REDIS_URL, decode_responses=True)
-
 
 class UserStatus:
     UNKNOWN = "unknown"
     ANONYMOUS = "anonymous"
     AUTHORIZED = "authorized"
-
 
 class SystemMonitor:
     """Мониторинг состояния системы"""
@@ -57,18 +54,21 @@ class SystemMonitor:
             'redis': {'status': '🟢 Онлайн', 'port': 6379, 'url': Config.REDIS_URL},
         }
 
+        tz = pytz.timezone('Europe/Moscow')
         self.stats = {
-            'start_time': datetime.now(),
+            'start_time': datetime.now(tz),
             'total_commands': 0,
             'active_users': 0,
         }
 
     def get_status(self) -> str:
         """Получить статус системы"""
+        tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(tz)
         lines = [
             "🖥️ *СТАТУС СИСТЕМЫ*",
-            f"Время: {datetime.now().strftime('%H:%M:%S')}",
-            f"Активна: {(datetime.now() - self.stats['start_time']).seconds // 60} мин",
+            f"Время: {now.strftime('%H:%M:%S')}",
+            f"Активна: {(now - self.stats['start_time']).seconds // 60} мин",
             "",
             "*Сервисы:*"
         ]
@@ -126,7 +126,6 @@ class SystemMonitor:
 • Личный кабинет
 • Уведомления
 """
-
 
 class TelegramBot:
     """Основной класс бота"""
@@ -200,22 +199,22 @@ class TelegramBot:
             response = requests.get(auth_url)
             if response.status_code == 200:
                 auth_response = response.json()
-                # Предполагаем, что Auth возвращает URL для redirect или сообщение
-                await update.message.reply_text(
-                    f"Перейдите по ссылке для авторизации: {auth_response.get('auth_url', 'URL not provided')}"
-                )
+                message = auth_response.get('message', 'Авторизация инициирована. Пожалуйста, завершите вход через предоставленную ссылку.')
+                if 'url' in auth_response:
+                    message += f"\nСсылка: {auth_response['url']}"
+                await update.message.reply_text(message)
             else:
-                await update.message.reply_text("Ошибка при запросе авторизации.")
+                await update.message.reply_text(f"Ошибка авторизации: {response.status_code}")
         except Exception as e:
-            logger.error(f"Error in login: {e}")
-            await update.message.reply_text("Внутренняя ошибка.")
+            logger.error(f"Error in login request: {e}")
+            await update.message.reply_text("Произошла ошибка при авторизации.")
 
     async def handle_logout(self, update: Update, context: CallbackContext):
         """Обработчик /logout"""
         chat_id = update.effective_chat.id
         user_data = self.get_user_data(chat_id)
         args = context.args
-        all_devices = 'all=true' in ' '.join(args).lower()
+        all_devices = args and args[0] == 'all=true'
 
         self.monitor.stats['total_commands'] += 1
 
@@ -223,78 +222,36 @@ class TelegramBot:
             await update.message.reply_text("Вы не авторизованы.")
             return
 
-        # Удаляем из Redis
+        # Удаляем данные из Redis
         self.delete_user_data(chat_id)
 
         if all_devices:
-            # Запрос к Auth на logout all с refresh_token
+            # Запрос к Auth API для выхода со всех устройств
             try:
-                response = requests.post(
-                    f"{Config.AUTH_API_URL}/logout",
-                    headers={'Authorization': f"Bearer {user_data['refresh_token']}"}
-                )
+                response = requests.post(f"{Config.AUTH_API_URL}/logout", json={'all': True}, headers={'Authorization': f"Bearer {user_data['access_token']}"})
                 if response.status_code == 200:
-                    await update.message.reply_text("Сеанс завершен на всех устройствах.")
+                    await update.message.reply_text("Вы вышли из всех устройств.")
                 else:
-                    await update.message.reply_text("Ошибка при logout на всех устройствах.")
+                    await update.message.reply_text("Ошибка при выходе из всех устройств.")
             except Exception as e:
                 logger.error(f"Error in logout all: {e}")
-                await update.message.reply_text("Внутренняя ошибка.")
-        else:
-            await update.message.reply_text("Сеанс завершен.")
+                await update.message.reply_text("Ошибка при выходе.")
+            return
 
-    async def check_auth_status(self, chat_id: int) -> Optional[Dict[str, str]]:
-        """Проверить статус авторизации через Auth API"""
-        user_data = self.get_user_data(chat_id)
-        if not user_data or user_data.get('status') != UserStatus.ANONYMOUS:
-            return None
-
-        login_token = user_data.get('login_token')
-
-        try:
-            response = requests.get(f"{Config.AUTH_API_URL}/check_login?token={login_token}")
-            if response.status_code == 200:
-                auth_data = response.json()
-                status = auth_data.get('status')
-
-                if status == 'denied':
-                    self.delete_user_data(chat_id)
-                    return {'message': 'Неудачная авторизация.'}
-                elif status == 'granted':
-                    access_token = auth_data.get('access_token')
-                    refresh_token = auth_data.get('refresh_token')
-                    if access_token and refresh_token:
-                        self.set_user_data(chat_id, {
-                            'status': UserStatus.AUTHORIZED,
-                            'access_token': access_token,
-                            'refresh_token': refresh_token
-                        })
-                        return {'message': 'Успешная авторизация!'}
-                    else:
-                        return {'message': 'Ошибка: токены не получены.'}
-                elif status == 'expired' or status == 'invalid':
-                    self.delete_user_data(chat_id)
-                    return None
-        except Exception as e:
-            logger.error(f"Error checking auth: {e}")
-
-        return None
+        await update.message.reply_text("Вы вышли из системы.")
 
     async def refresh_tokens(self, chat_id: int) -> bool:
-        """Обновить токены через refresh_token"""
+        """Обновить токены с помощью refresh_token"""
         user_data = self.get_user_data(chat_id)
         if not user_data or 'refresh_token' not in user_data:
             return False
 
         try:
-            response = requests.post(
-                f"{Config.AUTH_API_URL}/refresh",
-                headers={'Authorization': f"Bearer {user_data['refresh_token']}"}
-            )
+            response = requests.post(f"{Config.AUTH_API_URL}/refresh", headers={'Authorization': f"Bearer {user_data['refresh_token']}"})
             if response.status_code == 200:
-                new_tokens = response.json()
-                user_data['access_token'] = new_tokens.get('access_token')
-                user_data['refresh_token'] = new_tokens.get('refresh_token')
+                tokens = response.json()
+                user_data['access_token'] = tokens['access_token']
+                user_data['refresh_token'] = tokens['refresh_token']
                 self.set_user_data(chat_id, user_data)
                 return True
             else:
@@ -302,114 +259,107 @@ class TelegramBot:
                 return False
         except Exception as e:
             logger.error(f"Error refreshing tokens: {e}")
+            self.delete_user_data(chat_id)
             return False
 
+    async def check_auth_status(self, chat_id: int) -> Optional[Dict]:
+        """Проверить статус аутентификации для анонимного пользователя"""
+        user_data = self.get_user_data(chat_id)
+        if not user_data or user_data['status'] != UserStatus.ANONYMOUS:
+            return None
+
+        login_token = user_data['login_token']
+        try:
+            response = requests.get(f"{Config.AUTH_API_URL}/check_login?token={login_token}")
+            if response.status_code == 200:
+                data = response.json()
+                if data['status'] == 'approved':
+                    user_data['status'] = UserStatus.AUTHORIZED
+                    user_data['access_token'] = data['access_token']
+                    user_data['refresh_token'] = data['refresh_token']
+                    del user_data['login_token']
+                    del user_data['login_time']
+                    self.set_user_data(chat_id, user_data)
+                    return {'message': 'Авторизация успешна! Теперь вы можете использовать защищенные команды.'}
+                elif data['status'] == 'denied':
+                    self.delete_user_data(chat_id)
+                    return {'message': 'Авторизация отклонена.'}
+                elif data['status'] == 'expired':
+                    self.delete_user_data(chat_id)
+                    return {'message': 'Срок действия токена истек. Пожалуйста, попробуйте войти заново.'}
+            return None
+        except Exception as e:
+            logger.error(f"Error checking auth status: {e}")
+            return None
+
     async def handle_authorized_command(self, update: Update, context: CallbackContext, endpoint: str):
-        """Обработчик авторизованных команд (пример для /test)"""
+        """Общий обработчик для авторизованных команд"""
         chat_id = update.effective_chat.id
         user_data = self.get_user_data(chat_id)
 
-        if not user_data or user_data.get('status') != UserStatus.AUTHORIZED:
+        if not user_data or user_data['status'] != UserStatus.AUTHORIZED:
             await update.message.reply_text("Пожалуйста, авторизуйтесь с помощью /login.")
             return
 
-        # Запрос к Core API
+        headers = {'Authorization': f"Bearer {user_data['access_token']}"}
+
         try:
-            response = requests.get(
-                f"{Config.CORE_API_URL}/{endpoint}",
-                headers={'Authorization': f"Bearer {user_data['access_token']}"}
-            )
+            response = requests.get(f"{Config.CORE_API_URL}/{endpoint}", headers=headers)
             if response.status_code == 200:
-                data = response.json()
-                await update.message.reply_text(f"Ответ от Core: {json.dumps(data)}")
+                result = response.json()
+                await update.message.reply_text(str(result))
             elif response.status_code == 401:
-                # Пробуем refresh
                 if await self.refresh_tokens(chat_id):
-                    # Рекурсивно повторяем
-                    await self.handle_authorized_command(update, context, endpoint)
+                    # Повторить запрос после обновления
+                    headers['Authorization'] = f"Bearer {self.get_user_data(chat_id)['access_token']}"
+                    response = requests.get(f"{Config.CORE_API_URL}/{endpoint}", headers=headers)
+                    if response.status_code == 200:
+                        result = response.json()
+                        await update.message.reply_text(str(result))
+                    else:
+                        await update.message.reply_text("Ошибка после обновления токена.")
                 else:
                     await update.message.reply_text("Сессия истекла. Пожалуйста, авторизуйтесь заново.")
-            elif response.status_code == 403:
-                await update.message.reply_text("Недостаточно прав для этого действия.")
             else:
-                await update.message.reply_text("Ошибка при запросе к Core API.")
+                await update.message.reply_text(f"Ошибка: {response.status_code}")
         except Exception as e:
             logger.error(f"Error in authorized command: {e}")
-            await update.message.reply_text("Внутренняя ошибка.")
+            await update.message.reply_text("Произошла ошибка.")
 
     async def on_start(self, update: Update, context: CallbackContext):
         """Обработчик /start"""
-        user = update.effective_user
-        chat_id = update.effective_chat.id
-        user_data = self.get_user_data(chat_id)
         self.monitor.stats['total_commands'] += 1
-
-        if not user_data:
-            # Неизвестный пользователь
-            welcome_msg = f"""👋 Привет, {user.first_name}!
-
-🤖 Я - бот системы тестирования.
-Система находится в стадии активной разработки.
-
-📊 *Что уже работает:*
-• Контейнеры Docker подняты
-• Базы данных запущены  
-• Веб-интерфейс доступен
-• API сервисы готовы
-
-🔧 *Что будет добавлено:*
-• Авторизация через OAuth
-• Создание и прохождение тестов
-• Личный кабинет
-• Уведомления
-
-Пожалуйста, авторизуйтесь с помощью /login."""
-        elif user_data['status'] == UserStatus.ANONYMOUS:
-            welcome_msg = "Вы в статусе анонимного пользователя. Завершите авторизацию."
-        else:
-            welcome_msg = f"Добро пожаловать обратно, {user.first_name}! Вы авторизованы."
-
         keyboard = [
-            [{'text': '📊 Статус', 'callback_data': 'status'}],
-            [{'text': '🔧 Сервисы', 'callback_data': 'services'}],
-            [{'text': '🆘 Помощь', 'callback_data': 'help'}],
+            [InlineKeyboardButton("Статус", callback_data='status')],
+            [InlineKeyboardButton("Сервисы", callback_data='services')],
+            [InlineKeyboardButton("Помощь", callback_data='help')],
         ]
-        if user_data and user_data['status'] == UserStatus.AUTHORIZED:
-            keyboard.append([{'text': '🚪 Logout', 'callback_data': 'logout'}])
-
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            welcome_msg,
-            parse_mode='Markdown',
-            reply_markup={'inline_keyboard': keyboard}
+            "👋 Привет! Это бот для системы тестирования.\n"
+            "Пожалуйста, авторизуйтесь с помощью /login для полного доступа.",
+            reply_markup=reply_markup
         )
 
     async def on_status(self, update: Update, context: CallbackContext):
         """Обработчик /status"""
         self.monitor.stats['total_commands'] += 1
-        await update.message.reply_text(
-            self.monitor.get_status(),
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(self.monitor.get_status(), parse_mode='Markdown')
 
     async def on_services(self, update: Update, context: CallbackContext):
         """Обработчик /services"""
         self.monitor.stats['total_commands'] += 1
-        await update.message.reply_text(
-            self.monitor.get_services(),
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(self.monitor.get_services(), parse_mode='Markdown')
 
     async def on_help(self, update: Update, context: CallbackContext):
         """Обработчик /help"""
         self.monitor.stats['total_commands'] += 1
-        await update.message.reply_text(
-            self.monitor.get_help(),
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(self.monitor.get_help(), parse_mode='Markdown')
 
     async def on_test(self, update: Update, context: CallbackContext):
-        """Пример авторизованной команды /test"""
-        await self.handle_authorized_command(update, context, "test")  # Замените на реальный endpoint
+        """Обработчик /test - пример авторизованной команды"""
+        self.monitor.stats['total_commands'] += 1
+        await self.handle_authorized_command(update, context, 'test')
 
     async def on_callback(self, update: Update, context: CallbackContext):
         """Обработчик callback-запросов"""
@@ -547,7 +497,6 @@ class TelegramBot:
         logger.info("🤖 Бот запущен. Нажмите Ctrl+C для остановки")
         self.application.run_polling()
 
-
 def main():
     """Точка входа"""
     logger.info("🚀 Инициализация Telegram Bot...")
@@ -567,7 +516,6 @@ def main():
         bot.run()
     except Exception as e:
         logger.error(f"💥 Необработанная ошибка: {e}")
-
 
 if __name__ == '__main__':
     main()
