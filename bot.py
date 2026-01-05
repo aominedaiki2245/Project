@@ -508,7 +508,7 @@ def main():
         logger.error("❌ Токен бота не установлен!")
         return
 
-    # Устанавливаем в конфиг
+    # Устанавливаем в конфи
     Config.TELEGRAM_TOKEN = token
 
     try:

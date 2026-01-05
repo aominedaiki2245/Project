@@ -33,7 +33,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY bot.py .
 COPY package.json .  # If not needed, remove this line
 
-# Create non-root user
+# Create non-root use
 RUN adduser -D -u 1000 botuser && \
     chown -R botuser:botuser /app
 
