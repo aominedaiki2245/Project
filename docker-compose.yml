@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - auth-service
+      - core-service
+    ports:
+      - "8080:8080"  # If webhook, else polling doesn't need port
+    volumes:
+      - .:/app
+
+  nginx-bot:
+    image: nginx:latest
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx-bot.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - bot
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  auth-service:
+    image: auth-image  # Placeholder: build from Go/C++ module
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+      - postgres  # Assuming it uses DB
+
+  core-service:
+    image: core-image  # Placeholder: build from C++/Go module
+    ports:
+      - "8082:8082"
+    depends_on:
+      - redis
+      - postgres
+      - mongodb
+
+  web-client:
+    image: web-client-image  # Placeholder: e.g., Node.js/React
+    ports:
+      - "3000:3000"
+    depends_on:
+      - core-service
+      - auth-service
+
+  nginx-web:
+    image: nginx:latest
+    ports:
+      - "8083:80"
+    volumes:
+      - ./nginx-web.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web-client
+
+volumes:
+  postgres-data:
+  mongo-data:
