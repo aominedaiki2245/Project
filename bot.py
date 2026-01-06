@@ -137,7 +137,7 @@ class TelegramBot:
         self.job_queue: Optional[JobQueue] = None
 
     def generate_login_token(self) -> str:
-        """Генерировать токен входа (простой пример, в реальности используйте UUID или secure random)"""
+        """Генерировать токен входа"""
         import uuid
         return str(uuid.uuid4())
 
@@ -157,57 +157,71 @@ class TelegramBot:
         """Удалить данные пользователя из Redis"""
         redis_client.delete(str(chat_id))
 
+    async def initiate_login(self, chat_id: int, login_type: str, update: Update = None, query = None):
+        """Инициировать авторизацию (общий метод для message и callback)"""
+        user_data = self.get_user_data(chat_id)
+        self.monitor.stats['total_commands'] += 1
+
+        if user_data and user_data.get('status') == UserStatus.AUTHORIZED:
+            message_text = "Вы уже авторизованы."
+        else:
+            # Генерируем токен входа
+            login_token = self.generate_login_token()
+
+            # Сохраняем в Redis как анонимный
+            self.set_user_data(chat_id, {
+                'status': UserStatus.ANONYMOUS,
+                'login_token': login_token,
+                'login_time': datetime.now().isoformat()
+            })
+
+            # Запрос к Auth API
+            auth_url = f"{Config.AUTH_API_URL}/login?type={login_type}&token={login_token}"
+            try:
+                response = requests.get(auth_url)
+                if response.status_code == 200:
+                    auth_response = response.json()
+                    message_text = auth_response.get('message', 'Авторизация инициирована. Пожалуйста, завершите вход через предоставленную ссылку.')
+                    if 'url' in auth_response:
+                        message_text += f"\nСсылка: {auth_response['url']}"
+                else:
+                    message_text = f"Ошибка авторизации: {response.status_code}"
+            except Exception as e:
+                logger.error(f"Error in login request: {e}")
+                message_text = "Произошла ошибка при авторизации."
+
+        # Отправляем ответ в зависимости от типа update
+        if query:  # Для callback - редактируем сообщение
+            await query.edit_message_text(message_text)
+        elif update.message:  # Для обычного сообщения
+            await update.message.reply_text(message_text)
+
     async def handle_login(self, update: Update, context: CallbackContext):
-        """Обработчик /login"""
+        """Обработчик /login для сообщений"""
         chat_id = update.effective_chat.id
         user_data = self.get_user_data(chat_id)
         args = context.args
         login_type = args[0] if args else None
 
-        self.monitor.stats['total_commands'] += 1
-
         if user_data and user_data.get('status') == UserStatus.AUTHORIZED:
             await update.message.reply_text("Вы уже авторизованы.")
             return
 
-        if not login_type or login_type not in ['github', 'yandex', 'code']:
-            keyboard = [
-                [InlineKeyboardButton("GitHub", callback_data='login_github')],
-                [InlineKeyboardButton("Yandex ID", callback_data='login_yandex')],
-                [InlineKeyboardButton("Code", callback_data='login_code')],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(
-                "Пожалуйста, выберите метод авторизации:",
-                reply_markup=reply_markup
-            )
+        if login_type in ['github', 'yandex', 'code']:
+            await self.initiate_login(chat_id, login_type, update=update)
             return
 
-        # Генерируем токен входа
-        login_token = self.generate_login_token()
-
-        # Сохраняем в Redis как анонимный
-        self.set_user_data(chat_id, {
-            'status': UserStatus.ANONYMOUS,
-            'login_token': login_token,
-            'login_time': datetime.now().isoformat()
-        })
-
-        # Запрос к Auth API (предполагаем endpoint /login с type и token)
-        auth_url = f"{Config.AUTH_API_URL}/login?type={login_type}&token={login_token}"
-        try:
-            response = requests.get(auth_url)
-            if response.status_code == 200:
-                auth_response = response.json()
-                message = auth_response.get('message', 'Авторизация инициирована. Пожалуйста, завершите вход через предоставленную ссылку.')
-                if 'url' in auth_response:
-                    message += f"\nСсылка: {auth_response['url']}"
-                await update.message.reply_text(message)
-            else:
-                await update.message.reply_text(f"Ошибка авторизации: {response.status_code}")
-        except Exception as e:
-            logger.error(f"Error in login request: {e}")
-            await update.message.reply_text("Произошла ошибка при авторизации.")
+        # Показываем клавиатуру выбора
+        keyboard = [
+            [InlineKeyboardButton("GitHub", callback_data='login_github')],
+            [InlineKeyboardButton("Yandex ID", callback_data='login_yandex')],
+            [InlineKeyboardButton("Code", callback_data='login_code')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Пожалуйста, выберите метод авторизации:",
+            reply_markup=reply_markup
+        )
 
     async def handle_logout(self, update: Update, context: CallbackContext):
         """Обработчик /logout"""
@@ -341,20 +355,40 @@ class TelegramBot:
             reply_markup=reply_markup
         )
 
+    async def show_main_menu(self, query):
+        """Показать основное меню"""
+        keyboard = [
+            [InlineKeyboardButton("Статус", callback_data='status')],
+            [InlineKeyboardButton("Сервисы", callback_data='services')],
+            [InlineKeyboardButton("Помощь", callback_data='help')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "👋 Привет! Это бот для системы тестирования.\n"
+            "Пожалуйста, авторизуйтесь с помощью /login для полного доступа.",
+            reply_markup=reply_markup
+        )
+
     async def on_status(self, update: Update, context: CallbackContext):
         """Обработчик /status"""
         self.monitor.stats['total_commands'] += 1
-        await update.message.reply_text(self.monitor.get_status(), parse_mode='Markdown')
+        keyboard = [[InlineKeyboardButton("🔙 Вернуться назад", callback_data='back')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(self.monitor.get_status(), parse_mode='Markdown', reply_markup=reply_markup)
 
     async def on_services(self, update: Update, context: CallbackContext):
         """Обработчик /services"""
         self.monitor.stats['total_commands'] += 1
-        await update.message.reply_text(self.monitor.get_services(), parse_mode='Markdown')
+        keyboard = [[InlineKeyboardButton("🔙 Вернуться назад", callback_data='back')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(self.monitor.get_services(), parse_mode='Markdown', reply_markup=reply_markup)
 
     async def on_help(self, update: Update, context: CallbackContext):
         """Обработчик /help"""
         self.monitor.stats['total_commands'] += 1
-        await update.message.reply_text(self.monitor.get_help(), parse_mode='Markdown')
+        keyboard = [[InlineKeyboardButton("🔙 Вернуться назад", callback_data='back')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(self.monitor.get_help(), parse_mode='Markdown', reply_markup=reply_markup)
 
     async def on_test(self, update: Update, context: CallbackContext):
         """Обработчик /test - пример авторизованной команды"""
@@ -366,32 +400,37 @@ class TelegramBot:
         query = update.callback_query
         await query.answer()
 
+        keyboard_back = [[InlineKeyboardButton("🔙 Вернуться назад", callback_data='back')]]
+        reply_markup_back = InlineKeyboardMarkup(keyboard_back)
+
         if query.data == 'status':
             await query.edit_message_text(
                 text=self.monitor.get_status(),
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                reply_markup=reply_markup_back
             )
         elif query.data == 'services':
             await query.edit_message_text(
                 text=self.monitor.get_services(),
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                reply_markup=reply_markup_back
             )
         elif query.data == 'help':
             await query.edit_message_text(
                 text=self.monitor.get_help(),
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                reply_markup=reply_markup_back
             )
         elif query.data.startswith('login_'):
             login_type = query.data.split('_')[1]
-            # Симулируем /login с типом
-            temp_context = CallbackContext.from_update(update, self.application)
-            temp_context.args = [login_type]
-            await self.handle_login(update, temp_context)
-            await query.edit_message_text("Инициирована авторизация.")
+            chat_id = query.message.chat_id
+            await self.initiate_login(chat_id, login_type, query=query)
         elif query.data == 'logout':
             temp_context = CallbackContext.from_update(update, self.application)
             await self.handle_logout(update, temp_context)
             await query.edit_message_text("Сеанс завершен.")
+        elif query.data == 'back':
+            await self.show_main_menu(query)
 
     async def on_unknown(self, update: Update, context: CallbackContext):
         """Обработчик неизвестных команд"""
@@ -508,7 +547,7 @@ def main():
         logger.error("❌ Токен бота не установлен!")
         return
 
-    # Устанавливаем в конфи
+    # Устанавливаем в конфиг
     Config.TELEGRAM_TOKEN = token
 
     try:
