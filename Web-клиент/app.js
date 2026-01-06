@@ -85,7 +85,54 @@ app.get('/', async (req, res) => {
   // Если статус неизвестен — редирект на главную
   res.redirect('/');
 });
+// Маршрут для начала авторизации
+app.get('/login', async (req, res) => {
+  const type = req.query.type; // github, yandex или code
 
+  // Если тип не указан — редирект на главную
+  if (!type || !['github', 'yandex', 'code'].includes(type)) {
+    return res.redirect('/');
+  }
+
+  let sessionToken = req.sessionToken;
+  let isNewSession = false;
+
+  // Если сессии нет или она не Anonymous — создаём новую
+  if (!sessionToken || !req.session || req.session.status === 'Authorized') {
+    sessionToken = uuidv4();
+    isNewSession = true;
+  }
+
+  const loginToken = uuidv4();
+
+  // Сохраняем в Redis: статус Anonymous + loginToken
+  await setSessionData(sessionToken, {
+    status: 'Anonymous',
+    loginToken: loginToken
+  });
+
+  // Устанавливаем cookie (httpOnly для безопасности)
+  if (isNewSession) {
+    res.cookie('sessionToken', sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', // HTTPS в проде
+      maxAge: 24 * 60 * 60 * 1000 // 24 часа
+    });
+  }
+
+  // Здесь будет редирект на Authorization Server
+  // Пока заглушка — просто сообщение
+  const authUrl = `${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/auth?type=${type}&state=${loginToken}`;
+
+  return res.send(`
+    <h1>Перенаправление на авторизацию...</h1>
+    <p>Тип: ${type}</p>
+    <p>В реальной системе здесь будет редирект на:<br>
+    <a href="${authUrl}" target="_blank">${authUrl}</a></p>
+    <p>После подтверждения вернитесь сюда и обновите страницу.</p>
+    <a href="/">← На главную</a>
+  `);
+});
 app.listen(port, () => {
   console.log(`Web Client запущен на http://localhost:${port}`);
 });
