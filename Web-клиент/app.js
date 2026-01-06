@@ -66,12 +66,73 @@ app.get('/', async (req, res) => {
     `);
   }
 
-  if (req.session.status === 'Anonymous') {
-    return res.send(`
-      <h1>Ожидание авторизации...</h1>
-      <p>Вы начали процесс входа. Пожалуйста, завершите его во всплывшем окне.</p>
-      <p><a href="/">Обновить</a></p>
-    `);
+    if (req.session.status === 'Anonymous') {
+    const loginToken = req.session.loginToken;
+
+    if (!loginToken) {
+      // Если токена нет — ошибка, сбрасываем сессию
+      await deleteSession(req.sessionToken);
+      res.clearCookie('sessionToken');
+      return res.redirect('/');
+    }
+
+    try {
+      // Опрашиваем Authorization Server
+      const authResponse = await axios.get(
+        `${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/check?token=${loginToken}`
+      );
+
+      const responseData = authResponse.data;
+
+      // Возможные ответы от Authorization Server (по сценарию)
+      if (responseData.status === 'granted' && responseData.accessToken && responseData.refreshToken) {
+        // Успешная авторизация — сохраняем JWT и меняем статус
+        await setSessionData(req.sessionToken, {
+          status: 'Authorized',
+          accessToken: responseData.accessToken,
+          refreshToken: responseData.refreshToken
+        });
+
+        return res.send(`
+          <h1>Успешная авторизация!</h1>
+          <p>Добро пожаловать в систему.</p>
+          <a href="/">Перейти в личный кабинет</a>
+        `);
+      }
+
+      if (responseData.status === 'denied') {
+        // Пользователь нажал "Нет"
+        await deleteSession(req.sessionToken);
+        res.clearCookie('sessionToken');
+        return res.send(`
+          <h1>Доступ отклонён</h1>
+          <p>Вы отказались от входа.</p>
+          <a href="/">На главную</a>
+        `);
+      }
+
+      if (responseData.status === 'expired' || responseData.status === 'invalid') {
+        // Токен устарел или недействителен
+        await deleteSession(req.sessionToken);
+        res.clearCookie('sessionToken');
+        return res.redirect('/');
+      }
+
+      // Если статус неизвестен — просто ждём
+      return res.send(`
+        <h1>Ожидание подтверждения...</h1>
+        <p>Пожалуйста, подтвердите вход во всплывшем окне.</p>
+        <p><a href="/">Обновить статус</a></p>
+      `);
+
+    } catch (error) {
+      // Если Authorization Server недоступен — показываем ожидание
+      return res.send(`
+        <h1>Ожидание авторизации...</h1>
+        <p>Сервер авторизации временно недоступен. Подождите и обновите страницу.</p>
+        <p><a href="/">Обновить</a></p>
+      `);
+    }
   }
 
   if (req.session.status === 'Authorized') {
