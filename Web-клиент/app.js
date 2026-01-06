@@ -203,6 +203,75 @@ app.get('/logout', async (req, res) => {
   }
   res.redirect('/');
 });
+// Универсальный прокси для всех действий в системе
+app.all('/api/*', async (req, res) => {
+  if (!req.session || req.session.status !== 'Authorized') {
+    return res.status(401).send('Не авторизован');
+  }
+
+  let { accessToken, refreshToken } = req.session;
+
+  // Формируем путь к Главному модулю (убираем /api из начала)
+  const targetPath = req.path.replace('/api', '');
+  const mainModuleUrl = `${process.env.MAIN_MODULE_URL || 'http://localhost:5000'}${targetPath}${req.url.split('?')[1] ? '?' + req.url.split('?')[1] : ''}`;
+
+  try {
+    // Первый запрос с текущим accessToken
+    const response = await axios({
+      method: req.method,
+      url: mainModuleUrl,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      data: req.body
+    });
+
+    res.status(response.status).json(response.data);
+
+  } catch (error) {
+    if (error.response && error.response.status === 401) {
+      // Access token устарел — пытаемся обновить
+      try {
+        const refreshResponse = await axios.post(
+          `${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/refresh`,
+          { refreshToken }
+        );
+
+        const { accessToken: newAccess, refreshToken: newRefresh } = refreshResponse.data;
+
+        // Сохраняем новые токены
+        await setSessionData(req.sessionToken, {
+          status: 'Authorized',
+          accessToken: newAccess,
+          refreshToken: newRefresh || refreshToken
+        });
+
+        // Повторяем оригинальный запрос с новым токеном
+        const retryResponse = await axios({
+          method: req.method,
+          url: mainModuleUrl,
+          headers: {
+            'Authorization': `Bearer ${newAccess}`,
+            'Content-Type': 'application/json'
+          },
+          data: req.body
+        });
+
+        res.status(retryResponse.status).json(retryResponse.data);
+
+      } catch (refreshError) {
+        // Refresh тоже не удался — выход
+        await deleteSession(req.sessionToken);
+        res.clearCookie('sessionToken');
+        res.status(401).send('Сессия истекла. Требуется повторный вход.');
+      }
+    } else {
+      // Другая ошибка (403, 500 и т.д.)
+      res.status(error.response?.status || 500).send(error.response?.data || 'Ошибка сервера');
+    }
+  }
+});
 app.listen(port, () => {
   console.log(`Web Client запущен на http://localhost:${port}`);
 });
