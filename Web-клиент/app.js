@@ -135,13 +135,8 @@ app.get('/', async (req, res) => {
     }
   }
 
-  if (req.session.status === 'Authorized') {
-    return res.send(`
-      <h1>Личный кабинет</h1>
-      <p>Добро пожаловать, пользователь!</p>
-      <p>Список тестов, дисциплин и т.д. (в разработке)</p>
-      <a href="/logout">Выйти</a>
-    `);
+    if (req.session.status === 'Authorized') {
+    return res.sendFile(__dirname + '/public/dashboard.html');
   }
 
   // Если статус неизвестен — редирект на главную
