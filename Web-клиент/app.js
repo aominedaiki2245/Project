@@ -133,6 +133,14 @@ app.get('/login', async (req, res) => {
     <a href="/">← На главную</a>
   `);
 });
+// Маршрут выхода
+app.get('/logout', async (req, res) => {
+  if (req.sessionToken) {
+    await deleteSession(req.sessionToken);
+    res.clearCookie('sessionToken');
+  }
+  res.redirect('/');
+});
 app.listen(port, () => {
   console.log(`Web Client запущен на http://localhost:${port}`);
 });
