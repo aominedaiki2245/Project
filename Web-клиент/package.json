@@ -1,19 +1,18 @@
 {
   "name": "web-client",
   "version": "1.0.0",
-  "description": "Web Client модуль системы тестирования (Node.js + Express)",
+  "description": "Web Client модуль системы тестирования",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "nodemon app.js"
+    "start": "node app.js"
   },
-  "author": "Твоё имя",
+  "author": "aominedaiki2245",
   "dependencies": {
+    "axios": "^1.13.2",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.3",
     "express": "^4.18.2",
-    "cookie-parser": "^1.4.6",
-    "dotenv": "^16.3.1"
-    "redis": "^4.6.7",
-    "uuid": "^9.0.0",
-    "axios": "^1.6.0"
+    "redis": "^5.10.0",
+    "uuid": "^13.0.0"
   }
 }
