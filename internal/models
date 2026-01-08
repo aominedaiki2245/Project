@@ -1,0 +1,11 @@
+package user.go
+
+import "gorm.io/gorm"
+
+type User struct {
+    gorm.Model
+    ID          string `gorm:"primaryKey"` // Из auth (GitHub ID)
+    Role        string // admin, user
+    Email       string
+    DisplayName string
+}
