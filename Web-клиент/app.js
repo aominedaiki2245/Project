@@ -1,152 +1,88 @@
 require('dotenv').config();
-const axios = require('axios');
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const redis = require('redis');
 const { v4: uuidv4 } = require('uuid');
+const redis = require('redis');
+const path = require('path');
+const axios = require('axios');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Подключение к Redis
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379'
+  url: process.env.REDIS_URL || 'redis://localhost:6379',
+  // Отключаем сохранение на диск
+  socket: {
+    reconnectStrategy: false
+  },
+  disableOfflineQueue: true,
+  // Команда для отключения RDB/AOF
+  // Будет выполнена после подключения
 });
-
-redisClient.on('error', (err) => console.error('Redis Client Error', err));
-
 (async () => {
   await redisClient.connect();
   console.log('Подключено к Redis');
+
+  // Отключаем сохранение на диск
+  await redisClient.configSet('save', '');
+  await redisClient.configSet('appendonly', 'no');
 })();
 
 // Middleware
 app.use(cookieParser());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Вспомогательные функции для работы с сессиями
+// Функции сессий
 async function getSessionData(sessionToken) {
   if (!sessionToken) return null;
   const data = await redisClient.get(sessionToken);
   return data ? JSON.parse(data) : null;
 }
 
-async function setSessionData(sessionToken, data, ttl = 3600 * 24) { // 24 часа по умолчанию
+async function setSessionData(sessionToken, data, ttl = 86400) {
   await redisClient.set(sessionToken, JSON.stringify(data), { EX: ttl });
 }
 
 async function deleteSession(sessionToken) {
-  if (sessionToken) {
-    await redisClient.del(sessionToken);
-  }
+  if (sessionToken) await redisClient.del(sessionToken);
 }
 
-// Middleware для прикрепления сессии к запросу
+// Middleware сессии
 async function sessionMiddleware(req, res, next) {
   const sessionToken = req.cookies.sessionToken;
   req.session = await getSessionData(sessionToken);
-  req.sessionToken = sessionToken; // для удобства
+  req.sessionToken = sessionToken;
   next();
 }
 
 app.use(sessionMiddleware);
 
-// Главная страница — базовая логика статусов
+// Главная страница
 app.get('/', async (req, res) => {
   if (!req.session) {
-    // Неизвестный пользователь
+    return res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  }
+
+  if (req.session.status === 'Anonymous') {
     return res.send(`
-      <h1>Добро пожаловать!</h1>
-      <p>Для начала работы необходимо авторизоваться:</p>
-      <ul>
-        <li><a href="/login?type=github">Войти через GitHub</a></li>
-        <li><a href="/login?type=yandex">Войти через Yandex ID</a></li>
-        <li><a href="/login?type=code">Войти по коду</a></li>
-      </ul>
+      <h1>Ожидание авторизации...</h1>
+      <p>Пожалуйста, подтвердите вход во всплывшем окне.</p>
+      <p><a href="/">Обновить статус</a></p>
     `);
   }
 
-    if (req.session.status === 'Anonymous') {
-    const loginToken = req.session.loginToken;
-
-    if (!loginToken) {
-      // Если токена нет — ошибка, сбрасываем сессию
-      await deleteSession(req.sessionToken);
-      res.clearCookie('sessionToken');
-      return res.redirect('/');
-    }
-
-    try {
-      // Опрашиваем Authorization Server
-      const authResponse = await axios.get(
-        `${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/check?token=${loginToken}`
-      );
-
-      const responseData = authResponse.data;
-
-      // Возможные ответы от Authorization Server (по сценарию)
-      if (responseData.status === 'granted' && responseData.accessToken && responseData.refreshToken) {
-        // Успешная авторизация — сохраняем JWT и меняем статус
-        await setSessionData(req.sessionToken, {
-          status: 'Authorized',
-          accessToken: responseData.accessToken,
-          refreshToken: responseData.refreshToken
-        });
-
-        return res.send(`
-          <h1>Успешная авторизация!</h1>
-          <p>Добро пожаловать в систему.</p>
-          <a href="/">Перейти в личный кабинет</a>
-        `);
-      }
-
-      if (responseData.status === 'denied') {
-        // Пользователь нажал "Нет"
-        await deleteSession(req.sessionToken);
-        res.clearCookie('sessionToken');
-        return res.send(`
-          <h1>Доступ отклонён</h1>
-          <p>Вы отказались от входа.</p>
-          <a href="/">На главную</a>
-        `);
-      }
-
-      if (responseData.status === 'expired' || responseData.status === 'invalid') {
-        // Токен устарел или недействителен
-        await deleteSession(req.sessionToken);
-        res.clearCookie('sessionToken');
-        return res.redirect('/');
-      }
-
-      // Если статус неизвестен — просто ждём
-      return res.send(`
-        <h1>Ожидание подтверждения...</h1>
-        <p>Пожалуйста, подтвердите вход во всплывшем окне.</p>
-        <p><a href="/">Обновить статус</a></p>
-      `);
-
-    } catch (error) {
-      // Если Authorization Server недоступен — показываем ожидание
-      return res.send(`
-        <h1>Ожидание авторизации...</h1>
-        <p>Сервер авторизации временно недоступен. Подождите и обновите страницу.</p>
-        <p><a href="/">Обновить</a></p>
-      `);
-    }
+  if (req.session.status === 'Authorized') {
+    return res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
   }
 
-    if (req.session.status === 'Authorized') {
-    return res.sendFile(__dirname + '/public/dashboard.html');
-  }
-
-  // Если статус неизвестен — редирект на главную
-  res.redirect('/');
+  return res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
-// Маршрут для начала авторизации
-app.get('/login', async (req, res) => {
-  const type = req.query.type; // github, yandex или code
 
-  // Если тип не указан — редирект на главную
+// /login
+app.get('/login', async (req, res) => {
+  const type = req.query.type;
+
   if (!type || !['github', 'yandex', 'code'].includes(type)) {
     return res.redirect('/');
   }
@@ -154,43 +90,34 @@ app.get('/login', async (req, res) => {
   let sessionToken = req.sessionToken;
   let isNewSession = false;
 
-  // Если сессии нет или она не Anonymous — создаём новую
-  if (!sessionToken || !req.session || req.session.status === 'Authorized') {
+  if (!sessionToken || req.session?.status === 'Authorized') {
     sessionToken = uuidv4();
     isNewSession = true;
   }
 
   const loginToken = uuidv4();
 
-  // Сохраняем в Redis: статус Anonymous + loginToken
   await setSessionData(sessionToken, {
     status: 'Anonymous',
     loginToken: loginToken
   });
 
-  // Устанавливаем cookie (httpOnly для безопасности)
   if (isNewSession) {
-    res.cookie('sessionToken', sessionToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // HTTPS в проде
-      maxAge: 24 * 60 * 60 * 1000 // 24 часа
-    });
+    res.cookie('sessionToken', sessionToken, { httpOnly: true, maxAge: 86400000 });
   }
 
-  // Здесь будет редирект на Authorization Server
-  // Пока заглушка — просто сообщение
-  const authUrl = `${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/auth?type=${type}&state=${loginToken}`;
+  const authUrl = `\( {process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/auth?type= \){type}&state=${loginToken}`;
 
   return res.send(`
-    <h1>Перенаправление на авторизацию...</h1>
-    <p>Тип: ${type}</p>
-    <p>В реальной системе здесь будет редирект на:<br>
-    <a href="${authUrl}" target="_blank">${authUrl}</a></p>
-    <p>После подтверждения вернитесь сюда и обновите страницу.</p>
-    <a href="/">← На главную</a>
+    <h1>Перенаправление на ${type}</h1>
+    <p>В реальной системе здесь будет редирект.</p>
+    <p>Ссылка для теста:</p>
+    <a href="\( {authUrl}" target="_blank"> \){authUrl}</a>
+    <p><a href="/">← На главную</a></p>
   `);
 });
-// Маршрут выхода
+
+// /logout
 app.get('/logout', async (req, res) => {
   if (req.sessionToken) {
     await deleteSession(req.sessionToken);
@@ -198,23 +125,40 @@ app.get('/logout', async (req, res) => {
   }
   res.redirect('/');
 });
-// Универсальный прокси для всех действий в системе
+
+// Временный маршрут для теста Authorized
+app.get('/debug/auth-success', async (req, res) => {
+  if (!req.session || req.session.status !== 'Anonymous') {
+    return res.redirect('/');
+  }
+
+  await setSessionData(req.sessionToken, {
+    status: 'Authorized',
+    accessToken: 'fake-access-token',
+    refreshToken: 'fake-refresh-token'
+  });
+
+  res.send(`
+    <h1>Авторизация имитирована!</h1>
+    <p>Статус изменён на Authorized.</p>
+    <a href="/">Перейти в личный кабинет</a>
+  `);
+});
+// Прокси для действий авторизованного пользователя
 app.all('/api/*', async (req, res) => {
   if (!req.session || req.session.status !== 'Authorized') {
     return res.status(401).send('Не авторизован');
   }
 
-  let { accessToken, refreshToken } = req.session;
+  let accessToken = req.session.accessToken;
 
-  // Формируем путь к Главному модулю (убираем /api из начала)
-  const targetPath = req.path.replace('/api', '');
-  const mainModuleUrl = `${process.env.MAIN_MODULE_URL || 'http://localhost:5000'}${targetPath}${req.url.split('?')[1] ? '?' + req.url.split('?')[1] : ''}`;
+  const targetPath = req.path.substring(4); // убираем /api
+  const mainUrl = `\( {process.env.MAIN_MODULE_URL || 'http://localhost:5000'} \){targetPath}${req.url.split('?')[1] ? '?' + req.url.split('?')[1] : ''}`;
 
   try {
-    // Первый запрос с текущим accessToken
     const response = await axios({
       method: req.method,
-      url: mainModuleUrl,
+      url: mainUrl,
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
@@ -223,50 +167,41 @@ app.all('/api/*', async (req, res) => {
     });
 
     res.status(response.status).json(response.data);
-
   } catch (error) {
-    if (error.response && error.response.status === 401) {
-      // Access token устарел — пытаемся обновить
+    if (error.response?.status === 401) {
+      // Токен истёк — refresh
       try {
-        const refreshResponse = await axios.post(
-          `${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/refresh`,
-          { refreshToken }
-        );
+        const refreshRes = await axios.post(`${process.env.AUTH_SERVER_URL || 'http://localhost:4000'}/refresh`, {
+          refreshToken: req.session.refreshToken
+        });
 
-        const { accessToken: newAccess, refreshToken: newRefresh } = refreshResponse.data;
+        const { accessToken: newAccess, refreshToken: newRefresh } = refreshRes.data;
 
-        // Сохраняем новые токены
         await setSessionData(req.sessionToken, {
           status: 'Authorized',
           accessToken: newAccess,
-          refreshToken: newRefresh || refreshToken
+          refreshToken: newRefresh || req.session.refreshToken
         });
 
-        // Повторяем оригинальный запрос с новым токеном
-        const retryResponse = await axios({
+        // Повтор запроса
+        const retry = await axios({
           method: req.method,
-          url: mainModuleUrl,
-          headers: {
-            'Authorization': `Bearer ${newAccess}`,
-            'Content-Type': 'application/json'
-          },
+          url: mainUrl,
+          headers: { 'Authorization': `Bearer ${newAccess}` },
           data: req.body
         });
 
-        res.status(retryResponse.status).json(retryResponse.data);
-
+        res.status(retry.status).json(retry.data);
       } catch (refreshError) {
-        // Refresh тоже не удался — выход
         await deleteSession(req.sessionToken);
         res.clearCookie('sessionToken');
-        res.status(401).send('Сессия истекла. Требуется повторный вход.');
+        res.status(401).send('Сессия истекла');
       }
     } else {
-      // Другая ошибка (403, 500 и т.д.)
-      res.status(error.response?.status || 500).send(error.response?.data || 'Ошибка сервера');
+      res.status(error.response?.status || 500).send('Ошибка действия');
     }
   }
 });
 app.listen(port, () => {
-  console.log(`Web Client запущен на http://localhost:${port}`);
+  console.log('Web Client запущен на http://localhost:${port}');
 });
