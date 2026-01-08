@@ -1,0 +1,96 @@
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(to bottom, #f0f4f8, #d9e2ec);
+  margin: 0;
+  padding: 0;
+  color: #333;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.container {
+  background: white;
+  padding: 40px;
+  border-radius: 15px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+  max-width: 500px;
+  width: 90%;
+  text-align: center;
+}
+
+h1 {
+  color: #2c3e50;
+  margin-bottom: 20px;
+  font-size: 2.5em;
+}
+
+p {
+  font-size: 1.2em;
+  margin-bottom: 30px;
+  color: #555;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+}
+
+li {
+  margin: 15px 0;
+}
+
+a.button {
+  display: block;
+  padding: 15px;
+  background: #3498db;
+  color: white;
+  text-decoration: none;
+  border-radius: 10px;
+  font-size: 1.2em;
+  transition: background 0.3s;
+}
+
+a.button:hover {
+  background: #2980b9;
+}
+
+a.button.github {
+  background: #2c3e50;
+}
+
+a.button.github:hover {
+  background: #1a252f;
+}
+
+a.button.yandex {
+  background: #ffcc00;
+  color: #333;
+}
+
+a.button.yandex:hover {
+  background: #e6b800;
+}
+
+a.button.code {
+  background: #27ae60;
+}
+
+a.button.code:hover {
+  background: #1e8449;
+}
+
+.logout {
+  display: inline-block;
+  margin-top: 30px;
+  padding: 12px 25px;
+  background: #e74c3c;
+  color: white;
+  text-decoration: none;
+  border-radius: 8px;
+}
+
+.logout:hover {
+  background: #c0392b;
+}
