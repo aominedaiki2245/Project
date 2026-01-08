@@ -29,6 +29,7 @@ Project/
 ├─ .env.example
 ├─ .gitignore
 └─ README.md
+
 ## Функциональность
 
 ### Статусы пользователя
